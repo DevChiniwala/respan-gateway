@@ -121,6 +121,10 @@ pub enum Effort {
     Medium,
     /// Much thinking.
     High,
+    /// More thinking than [`Effort::High`].
+    XHigh,
+    /// The most thinking.
+    Max,
 }
 
 /// A common structured-output requirement.

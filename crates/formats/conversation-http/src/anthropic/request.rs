@@ -316,14 +316,15 @@ pub(crate) fn read_output(v: &Value, input: &mut Input) {
     }
 }
 
-/// The kind's effort of `output_config.effort`, if it is one the kind names
-/// (`xhigh` and `max` are Anthropic's alone): then it leaves the request's
-/// `native`.
+/// The kind's effort of `output_config.effort`, if it is one the kind names:
+/// then it leaves the request's `native`.
 pub(crate) fn read_effort(input: &mut Input) {
     let named = |effort: &Value| match effort.as_str()? {
         "low" => Some(Effort::Low),
         "medium" => Some(Effort::Medium),
         "high" => Some(Effort::High),
+        "xhigh" => Some(Effort::XHigh),
+        "max" => Some(Effort::Max),
         _ => None,
     };
     let Some(native) = &mut input.native else {
@@ -358,6 +359,8 @@ fn effort_name(effort: Effort) -> Result<Option<&'static str>, Fault> {
         Effort::Minimal | Effort::Low => Some("low"),
         Effort::Medium => Some("medium"),
         Effort::High => Some("high"),
+        Effort::XHigh => Some("xhigh"),
+        Effort::Max => Some("max"),
         _ => {
             return Err(untranslatable(
                 "a reasoning effort Anthropic has no level for",

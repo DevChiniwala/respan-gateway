@@ -259,7 +259,7 @@ fn what_the_kind_has_no_form_for_is_native_and_refused_in_translation() {
         ("conversation", json!("conv_1")),
         ("include", json!(["reasoning.encrypted_content"])),
         ("truncation", json!("auto")),
-        ("reasoning", json!({ "effort": "xhigh" })),
+        ("reasoning", json!({ "summary": "concise" })),
         ("metadata", json!({ "k": "v" })),
         ("tools", json!([{ "type": "web_search_preview" }])),
         ("tool_choice", json!({ "type": "web_search_preview" })),
@@ -999,4 +999,20 @@ fn a_foreign_value_is_dropped_beside_what_it_can_write() {
         written.contains("\"hi\"") && !written.contains("refusal"),
         "{written}"
     );
+}
+
+#[test]
+fn every_named_effort_is_the_kinds_and_written_as_it_came() {
+    for name in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+        let v = json!({ "model": "m", "input": [{ "role": "user", "content": "hi" }],
+            "reasoning": { "effort": name } });
+        let chat = decode_request(&v);
+        assert!(chat.native.is_empty(), "{name}");
+        assert_eq!(round_trip(&v), v, "{name}");
+        let sent = OpenAiChat.encode_request(&chat).map(Value::from);
+        assert_eq!(
+            sent.ok().map(|v| v["reasoning_effort"].clone()),
+            Some(json!(name))
+        );
+    }
 }

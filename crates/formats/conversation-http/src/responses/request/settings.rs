@@ -257,7 +257,7 @@ pub(in crate::responses) fn write_reasoning(
         }
         if let Some(config) = config.as_object_mut() {
             if let Some(effort) = r.effort {
-                config.insert("effort".into(), effort_name(effort).into());
+                config.insert("effort".into(), effort_name(effort)?.into());
             }
             match r.summary {
                 Some(true) => _ = config.insert("summary".into(), "auto".into()),

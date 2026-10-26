@@ -1014,3 +1014,24 @@ fn large_content_in_another_order_is_written_in_that_order() {
         .collect();
     assert_eq!(written, Value::Array(reversed));
 }
+
+#[test]
+fn every_output_effort_is_the_kinds_and_reaches_openai() {
+    use crate::openai::OpenAiChat;
+    for name in ["low", "medium", "high", "xhigh", "max"] {
+        let v = json!({ "model": "m", "max_tokens": 64, "output_config": { "effort": name },
+            "messages": [{ "role": "user", "content": "hi" }] });
+        let chat = AnthropicMessages.decode_json(&v);
+        assert!(chat.native.is_empty(), "{name}");
+        let back = AnthropicMessages.encode_request(&chat).map(Value::from);
+        assert_eq!(
+            back.ok().map(|v| v["output_config"].clone()),
+            Some(json!({ "effort": name }))
+        );
+        let sent = OpenAiChat.encode_request(&chat).map(Value::from);
+        assert_eq!(
+            sent.ok().map(|v| v["reasoning_effort"].clone()),
+            Some(json!(name))
+        );
+    }
+}

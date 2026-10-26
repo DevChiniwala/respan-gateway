@@ -598,16 +598,19 @@ impl NativeFieldsExt for Option<NativeFields> {
     }
 }
 
-/// An effort as vendors name it: `none` (thinking off) to `high`.
-pub(crate) fn effort_name(effort: Effort) -> &'static str {
-    match effort {
+/// An effort as vendors name it: `none` (thinking off) to `max`, refused
+/// for one this format has no name for.
+pub(crate) fn effort_name(effort: Effort) -> Result<&'static str, Fault> {
+    Ok(match effort {
         Effort::Off => "none",
         Effort::Minimal => "minimal",
         Effort::Low => "low",
         Effort::Medium => "medium",
         Effort::High => "high",
-        _ => "high",
-    }
+        Effort::XHigh => "xhigh",
+        Effort::Max => "max",
+        _ => return Err(untranslatable("a reasoning effort with no name")),
+    })
 }
 
 /// The effort a vendor's `name` says, in either case; `None` for any other
@@ -619,6 +622,8 @@ pub(crate) fn parse_effort(name: &str) -> Option<Effort> {
         "low" => Effort::Low,
         "medium" => Effort::Medium,
         "high" => Effort::High,
+        "xhigh" => Effort::XHigh,
+        "max" => Effort::Max,
         _ => return None,
     })
 }

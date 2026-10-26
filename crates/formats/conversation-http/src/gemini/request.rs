@@ -707,7 +707,7 @@ pub(super) fn write_config(chat: &Input, v: &mut Map<String, Value>) -> Result<(
         return Err(untranslatable("an end user's id"));
     }
     if let Some(r) = reasoning_of(chat)? {
-        write_thinking(r, &mut config);
+        write_thinking(r, &mut config)?;
     }
     set(
         v,
@@ -740,7 +740,7 @@ fn read_thinking(config: &mut Map<String, Value>) -> Option<Reasoning> {
             .get("thinkingLevel")
             .and_then(Value::as_str)
             .and_then(parse_effort)
-            .filter(|e| *e != Effort::Off)
+            .filter(|e| level_name(*e).is_some())
         {
             thinking.shift_remove("thinkingLevel");
             r.effort = Some(level);
@@ -756,14 +756,24 @@ fn read_thinking(config: &mut Map<String, Value>) -> Option<Reasoning> {
     (r != Reasoning::default()).then_some(r)
 }
 
-/// `thinkingConfig` of `config` with the kind's reasoning over its own.
-fn write_thinking(r: &Reasoning, config: &mut Value) {
+/// Gemini's `thinkingLevel` of a named `effort`, which has none for `Off`
+/// (a budget of 0) or above `high`.
+fn level_name(effort: Effort) -> Option<&'static str> {
+    match effort {
+        Effort::Minimal | Effort::Low | Effort::Medium | Effort::High => effort_name(effort).ok(),
+        _ => None,
+    }
+}
+
+/// `thinkingConfig` of `config` with the kind's reasoning over its own,
+/// refused for an effort Gemini has no level for.
+fn write_thinking(r: &Reasoning, config: &mut Value) -> Result<(), Fault> {
     let Some(config) = config.as_object_mut() else {
-        return;
+        return Ok(());
     };
     let thinking = config.entry("thinkingConfig").or_insert_with(|| json!({}));
     let Some(thinking) = thinking.as_object_mut() else {
-        return;
+        return Ok(());
     };
     if r.effort.is_some() || r.budget_tokens.is_some() {
         thinking.shift_remove("thinkingBudget");
@@ -771,7 +781,12 @@ fn write_thinking(r: &Reasoning, config: &mut Value) {
     }
     match (r.effort, r.budget_tokens) {
         (Some(Effort::Off), _) => _ = thinking.insert("thinkingBudget".into(), 0.into()),
-        (Some(level), _) => _ = thinking.insert("thinkingLevel".into(), effort_name(level).into()),
+        (Some(effort), _) => {
+            let level = level_name(effort).ok_or_else(|| {
+                untranslatable("a reasoning effort Gemini has no thinking level for")
+            })?;
+            thinking.insert("thinkingLevel".into(), level.into());
+        }
         (None, Some(n)) => _ = thinking.insert("thinkingBudget".into(), n.into()),
         (None, None) => {}
     }
@@ -781,4 +796,5 @@ fn write_thinking(r: &Reasoning, config: &mut Value) {
     if thinking.is_empty() {
         config.shift_remove("thinkingConfig");
     }
+    Ok(())
 }

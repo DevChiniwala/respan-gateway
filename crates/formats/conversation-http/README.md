@@ -156,6 +156,7 @@ to its own format unchanged, and is refused in another.
 | --- | --- | --- | --- | --- |
 | `effort: Off` | `reasoning_effort: "none"` | `reasoning.effort: "none"` | `thinking: {type: "disabled"}` | `thinkingBudget: 0` |
 | `effort: Minimal/Low/Medium/High` | `reasoning_effort` | `reasoning.effort` | `output_config.effort` (`low` for `Minimal`) | `thinkingLevel` |
+| `effort: XHigh/Max` | `reasoning_effort: "xhigh"/"max"` | `reasoning.effort` | `output_config.effort` | refused |
 | `budget_tokens: n` | refused | refused | `thinking: {type: "enabled", budget_tokens: n}` | `thinkingBudget: n` |
 | `summary: true` | refused | `reasoning.summary: "auto"` | (thinking is returned) | `includeThoughts: true` |
 | `summary: false` | (nothing) | (no summary) | refused | `includeThoughts: false` |

@@ -459,7 +459,7 @@ pub(crate) fn write_reasoning(input: &Input) -> Result<Option<Value>, Fault> {
         return Err(untranslatable("returned reasoning in OpenAI Chat"));
     }
     Ok(match r.effort {
-        Some(effort) => Some(effort_name(effort).into()),
+        Some(effort) => Some(effort_name(effort)?.into()),
         None => own_native(input, OPENAI, "reasoning_effort"),
     })
 }

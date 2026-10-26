@@ -648,3 +648,26 @@ fn a_json_array_element_joins_the_data_lines_of_its_event() {
     let elements: Value = serde_json::from_slice(&out).expect("one JSON array");
     assert_eq!(elements, json!([{ "a": 1 }, { "a": 1 }]));
 }
+
+#[test]
+fn a_thinking_level_gemini_lacks_stays_native_and_the_kinds_is_refused() {
+    use respan_gateway_conversation::{Effort, Reasoning};
+    for level in ["minimal", "low", "medium", "high"] {
+        let v = json!({ "contents": [{ "role": "user", "parts": [{ "text": "x" }] }],
+            "generationConfig": { "thinkingConfig": { "thinkingLevel": level } } });
+        let chat = GeminiGenerate.decode_json(&v);
+        assert!(chat.options.reasoning.is_some(), "{level}");
+        assert_eq!(written(v.clone(), |_| {}).ok(), Some(v), "{level}");
+    }
+    let v = json!({ "contents": [{ "role": "user", "parts": [{ "text": "x" }] }],
+        "generationConfig": { "thinkingConfig": { "thinkingLevel": "max" } } });
+    assert!(GeminiGenerate.decode_json(&v).options.reasoning.is_none());
+    assert_eq!(written(v.clone(), |_| {}).ok(), Some(v));
+    for effort in [Effort::XHigh, Effort::Max] {
+        let one = json!({ "contents": [{ "role": "user", "parts": [{ "text": "x" }] }] });
+        let sent = written(one, |c| {
+            c.options.reasoning = Some(Reasoning::effort(effort))
+        });
+        assert!(sent.is_err(), "{effort:?}");
+    }
+}
