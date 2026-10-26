@@ -24,6 +24,7 @@ after it was last read, up to about 256 MiB, the stalest dropped first. It
 is one gateway's: not across a restart, nor shared between gateways, so a
 client whose requests reach several gateways must reach the one that kept
 its conversation, or use a `Store` they share (`Responses::with_store`).
+The memory budget includes retained format-specific JSON values and fields.
 
 ```rust,ignore
 use respan_gateway_plugin_responses::Responses;
