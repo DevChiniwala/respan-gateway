@@ -5,6 +5,8 @@
 use std::time::Duration;
 
 use respan_gateway_conversation::{Content, MediaSource, Message};
+use respan_gateway_core::NativeFields;
+use serde_json::Value;
 
 /// What is kept under a key: a response's turn of a conversation (the
 /// messages its request added, and the reply) under its id, beside the
@@ -43,6 +45,10 @@ impl Memory {
 
     /// Turns kept for `keep`.
     pub fn new(keep: Duration) -> Self {
+        Self::with_budget(keep, Self::BUDGET)
+    }
+
+    fn with_budget(keep: Duration, budget: u64) -> Self {
         let bytes = |_: &String, turn: &Turn| {
             let bytes: usize = turn.messages.iter().map(bytes_of).sum();
             u32::try_from(bytes).unwrap_or(u32::MAX)
@@ -50,7 +56,7 @@ impl Memory {
         let turns = moka::sync::Cache::builder()
             .time_to_idle(keep)
             .weigher(bytes)
-            .max_capacity(Self::BUDGET)
+            .max_capacity(budget)
             .eviction_policy(moka::policy::EvictionPolicy::lru())
             .build();
         Self { turns }
@@ -67,28 +73,146 @@ impl Store for Memory {
     }
 }
 
-/// Roughly the bytes `message` holds: its text and media.
+/// Roughly the bytes `message` holds, including format-specific data.
 fn bytes_of(message: &Message) -> usize {
     fn part(content: &Content) -> usize {
         match content {
-            Content::Text { text, .. } => text.len(),
-            // Reasoning carries its encrypted content in its native fields.
-            Content::Reasoning { text, native } => {
-                let fields = native.iter().flat_map(|n| n.fields.values());
-                text.len() + fields.map(|v| v.to_string().len()).sum::<usize>()
+            Content::Text { text, native, .. } | Content::Reasoning { text, native } => {
+                text.len() + native_bytes(native)
             }
             Content::Image(media) | Content::Audio(media) | Content::Document(media) => {
-                match &media.source {
+                let source = match &media.source {
                     MediaSource::Bytes(bytes) => bytes.len(),
                     MediaSource::Url(url) => url.len(),
-                }
+                };
+                source
+                    + media.mime_type.len()
+                    + media.name.as_ref().map_or(0, String::len)
+                    + native_bytes(&media.native)
             }
             Content::ToolCall {
-                arguments, name, ..
-            } => arguments.len() + name.len(),
-            Content::ToolResult { content, .. } => content.iter().map(part).sum(),
+                id,
+                arguments,
+                name,
+                native,
+                ..
+            } => id.len() + arguments.len() + name.len() + native_bytes(native),
+            Content::ToolResult {
+                id,
+                content,
+                native,
+                ..
+            } => id.len() + content.iter().map(part).sum::<usize>() + native_bytes(native),
+            Content::Native(native) => native.format.len() + value_bytes(&native.value),
             _ => 256,
         }
     }
-    64 + message.content.iter().map(part).sum::<usize>()
+    64 + message.content.iter().map(part).sum::<usize>() + native_bytes(&message.native)
+}
+
+fn native_bytes(native: &Option<NativeFields>) -> usize {
+    native.as_ref().map_or(0, |native| {
+        native.format.len()
+            + native
+                .fields
+                .iter()
+                .map(|(key, value)| std::mem::size_of::<String>() + key.len() + value_bytes(value))
+                .sum::<usize>()
+    })
+}
+
+/// Estimate retained JSON without serializing a potentially large payload.
+fn value_bytes(value: &Value) -> usize {
+    std::mem::size_of::<Value>()
+        + match value {
+            Value::String(text) => text.len(),
+            Value::Array(items) => items.iter().map(value_bytes).sum(),
+            Value::Object(fields) => fields
+                .iter()
+                .map(|(key, value)| std::mem::size_of::<String>() + key.len() + value_bytes(value))
+                .sum(),
+            Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+        }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use respan_gateway_conversation::{Media, Role};
+    use serde_json::{Map, Value, json};
+
+    fn retained(message: Message) -> bool {
+        let memory = Memory::with_budget(Duration::from_secs(60), 1_024);
+        memory.put(
+            "response".into(),
+            Turn {
+                parent: None,
+                messages: vec![message],
+            },
+        );
+        memory.turns.run_pending_tasks();
+        memory.get("response").is_some()
+    }
+
+    #[test]
+    fn native_content_exceeding_the_budget_is_not_retained() {
+        let message = Message::new(
+            Role::User,
+            Content::native("openai-responses", json!({"opaque": "x".repeat(2_048)})),
+        );
+        assert!(!retained(message));
+    }
+
+    #[test]
+    fn native_text_fields_exceeding_the_budget_are_not_retained() {
+        let mut message = Message::new(Role::User, "prompt");
+        let Content::Text { native, .. } = &mut message.content[0] else {
+            unreachable!()
+        };
+        let fields = Map::from_iter([("annotation".into(), Value::String("x".repeat(2_048)))]);
+        *native = Some(respan_gateway_core::NativeFields::new(
+            "openai-responses",
+            fields,
+        ));
+        assert!(!retained(message));
+    }
+
+    #[test]
+    fn native_message_fields_exceeding_the_budget_are_not_retained() {
+        let mut message = Message::new(Role::User, "prompt");
+        let fields = Map::from_iter([("metadata".into(), json!({"payload": "x".repeat(2_048)}))]);
+        message.native = Some(NativeFields::new("openai-responses", fields));
+        assert!(!retained(message));
+    }
+
+    #[test]
+    fn native_media_and_tool_fields_exceeding_the_budget_are_not_retained() {
+        let fields = Map::from_iter([("payload".into(), Value::String("x".repeat(2_048)))]);
+        let native = NativeFields::new("openai-responses", fields);
+
+        let mut media = Media::new("image/png", MediaSource::Url("https://x.test/i".into()));
+        media.native = Some(native.clone());
+        assert!(!retained(Message::new(Role::User, Content::Image(media))));
+
+        let mut call = Content::tool_call("call-1", "lookup", "{}");
+        if let Content::ToolCall { native: fields, .. } = &mut call {
+            *fields = Some(native.clone());
+        }
+        assert!(!retained(Message::new(Role::Assistant, call)));
+
+        let mut result = Content::tool_result("call-1", vec![Content::from("done")], false);
+        if let Content::ToolResult { native: fields, .. } = &mut result {
+            *fields = Some(native);
+        }
+        assert!(!retained(Message::new(Role::User, result)));
+    }
+
+    #[test]
+    fn small_native_content_is_retained() {
+        let message = Message::new(
+            Role::User,
+            Content::native("openai-responses", json!({"opaque": "small"})),
+        );
+        assert!(retained(message));
+    }
 }
