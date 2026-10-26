@@ -1,16 +1,26 @@
 //! DeepInfra: Chat Completions, images, embeddings, speech and
-//! transcriptions, as OpenAI serves them. Not its videos: a finished job
-//! says `succeeded`, not `completed`, beside a `data` list of its files.
+//! transcriptions, as OpenAI serves them, and videos in its dialect.
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
+use respan_gateway_conversation::MediaSource;
+use respan_gateway_conversation_http::fields::{kept, native_of};
 use respan_gateway_conversation_http::openai::OpenAiChat;
+use respan_gateway_core::{Fault, Filter};
+use respan_gateway_http::bytes::Bytes;
+use respan_gateway_http::content::content_type;
+use respan_gateway_http::http::request::Parts as RequestHead;
+use respan_gateway_http::http::response::Parts as ResponseHead;
+use respan_gateway_media::video;
 use respan_gateway_media_http::openai::{
-    OpenAiEmbeddings, OpenAiImages, OpenAiSpeech, OpenAiTranscriptions,
+    OpenAiEmbeddings, OpenAiImages, OpenAiSpeech, OpenAiTranscriptions, OpenAiVideos,
 };
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use respan_gateway_vendor_kit::{
-    Body, BoxFuture, Model, Models, Price, Vendor, VendorProvider, built_wrong, http, json,
+    Body, BoxFuture, Dialect, Dialected, Model, Models, Price, Rewrite, Vendor, VendorProvider,
+    built_wrong, http, json,
 };
 
 /// Where its API is.
@@ -26,10 +36,81 @@ pub const VENDOR: Vendor = Vendor {
         (&OpenAiEmbeddings, Some(BASE_URL)),
         (&OpenAiSpeech, Some(BASE_URL)),
         (&OpenAiTranscriptions, Some(BASE_URL)),
+        (&Dialected::new(OpenAiVideos, DeepInfra), Some(BASE_URL)),
     ],
     models: list_models,
     ..Vendor::DEFAULT
 };
+
+/// DeepInfra's videos: it takes a creation's reference image as
+/// `image_url`, a URL or the image's data URL, in JSON, not as a form's
+/// `input_reference`. Its job says `running` and `succeeded` for OpenAI's
+/// `in_progress` and `completed`, why it failed as a string, and its files
+/// in a `data` list, which would read as a page of jobs; they are dropped,
+/// as `/videos/{id}/content` serves the video.
+#[derive(Debug, Clone, Copy)]
+pub struct DeepInfra;
+
+impl Dialect for DeepInfra {
+    type Input = video::Input;
+    type Output = video::Output;
+
+    fn inputs(&self) -> Option<Box<dyn Filter<video::Input>>> {
+        Some(Box::new(referenced))
+    }
+
+    fn response(&self, _: &RequestHead, head: &mut ResponseHead) -> Option<Rewrite> {
+        let essence = content_type(head)?.split(';').next()?.trim();
+        if !head.status.is_success() || !essence.eq_ignore_ascii_case("application/json") {
+            return None;
+        }
+        Some(Box::new(openai_job))
+    }
+}
+
+/// The states of its jobs OpenAI names otherwise, each with OpenAI's name.
+const STATUSES: &[(&str, &str)] = &[("running", "in_progress"), ("succeeded", "completed")];
+
+/// A creation as DeepInfra takes it: its reference image as `image_url`.
+fn referenced(input: &mut video::Input) -> Result<(), Fault> {
+    let video::Input::Create(create) = input else {
+        return Ok(());
+    };
+    let Some(reference) = create.reference.take() else {
+        return Ok(());
+    };
+    let url = match reference.source {
+        MediaSource::Url(url) => url,
+        MediaSource::Bytes(bytes) => {
+            let data = STANDARD.encode(bytes);
+            format!("data:{};base64,{data}", reference.mime_type)
+        }
+    };
+    let mut fields = kept(OpenAiVideos::NAME, &create.native)?;
+    fields.entry("image_url").or_insert_with(|| url.into());
+    create.native = native_of(OpenAiVideos::NAME, fields);
+    Ok(())
+}
+
+/// Its job as OpenAI's; an answer that is no JSON object is left as it is.
+fn openai_job(raw: Bytes) -> Result<Bytes, Fault> {
+    let Ok(mut job) = serde_json::from_slice::<Map<String, Value>>(&raw) else {
+        return Ok(raw);
+    };
+    job.shift_remove("data");
+    if let Some(status) = job.get_mut("status")
+        && let Some((_, openai)) = STATUSES.iter().find(|(its, _)| status == its)
+    {
+        *status = (*openai).into();
+    }
+    if let Some(message) = job.get("error").and_then(Value::as_str) {
+        let error = Map::from_iter([("message".to_owned(), message.into())]);
+        job.insert("error".into(), error.into());
+    }
+    serde_json::to_vec(&job)
+        .map(Bytes::from)
+        .map_err(|e| Fault::internal("a video job is no JSON").with_source(e))
+}
 
 /// The kind each of its tags says a model is, the first it has.
 const KINDS: &[(&str, &str)] = &[
@@ -88,7 +169,77 @@ fn price(p: &Value) -> Option<Price> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use respan_gateway_conversation::Media;
     use serde_json::json;
+
+    fn head(status: u16, content_type: &str) -> ResponseHead {
+        let answer = http::Response::builder()
+            .status(status)
+            .header("content-type", content_type);
+        answer.body(()).expect("head").into_parts().0
+    }
+
+    fn job(answer: Value) -> Value {
+        let read = openai_job(Bytes::from(answer.to_string())).expect("a job");
+        serde_json::from_slice(&read).expect("JSON")
+    }
+
+    #[test]
+    fn only_a_json_success_is_read_as_a_job() {
+        let sent = http::Request::new(()).into_parts().0;
+        let rewritten = |status, content_type| {
+            let mut head = head(status, content_type);
+            DeepInfra.response(&sent, &mut head).is_some()
+        };
+        assert!(rewritten(200, "application/json; charset=utf-8"));
+        assert!(!rewritten(200, "video/mp4"), "content is relayed as it is");
+        assert!(!rewritten(422, "application/json"));
+    }
+
+    #[test]
+    fn its_job_reads_as_openais() {
+        let finished = job(json!({
+            "id": "j1", "object": "video.generation.job", "created_at": 1, "status": "succeeded",
+            "model": "google/veo-3.1", "data": [{ "url": "https://x/v.mp4" }], "error": null,
+        }));
+        assert_eq!(
+            finished,
+            json!({
+                "id": "j1", "object": "video.generation.job", "created_at": 1,
+                "status": "completed", "model": "google/veo-3.1", "error": null,
+            })
+        );
+        let running = job(json!({ "id": "j2", "status": "running" }));
+        assert_eq!(running["status"], "in_progress");
+        let failed = job(json!({ "id": "j3", "status": "failed", "error": "blocked" }));
+        assert_eq!(failed["status"], "failed");
+        assert_eq!(failed["error"], json!({ "message": "blocked" }));
+        let raw = Bytes::from_static(b"[]");
+        assert_eq!(openai_job(raw.clone()).expect("as it is"), raw);
+    }
+
+    #[test]
+    fn a_reference_image_goes_as_its_image_url() {
+        let image_url = |reference: MediaSource| {
+            let mut create = video::Create::new("a cat");
+            create.reference = Some(Media::new("image/png", reference));
+            let mut input = video::Input::Create(create);
+            referenced(&mut input).expect("referenced");
+            let native = match input {
+                video::Input::Create(c) if c.reference.is_none() => c.native,
+                _ => None,
+            };
+            native.and_then(|n| n.fields.get("image_url").cloned())
+        };
+        let bytes = MediaSource::Bytes(Bytes::from_static(b"png"));
+        assert_eq!(image_url(bytes), Some(json!("data:image/png;base64,cG5n")));
+        let url = MediaSource::Url("https://x/cat.png".into());
+        assert_eq!(image_url(url), Some(json!("https://x/cat.png")));
+        let retrieve = || video::Input::Retrieve { id: "j1".into() };
+        let mut input = retrieve();
+        referenced(&mut input).expect("untouched");
+        assert_eq!(input, retrieve());
+    }
 
     #[test]
     fn its_tags_say_a_models_kind_and_its_metadata_the_rest() {
