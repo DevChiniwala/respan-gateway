@@ -5,8 +5,14 @@
 pub mod e2b;
 pub mod elevenlabs;
 pub mod exa;
+pub mod firecrawl;
 
 use respan_gateway_tool_vendor_kit::ToolVendor;
 
 /// Every yellow tool vendor.
-pub const ALL: &[&ToolVendor] = &[&e2b::VENDOR, &elevenlabs::VENDOR, &exa::VENDOR];
+pub const ALL: &[&ToolVendor] = &[
+    &e2b::VENDOR,
+    &elevenlabs::VENDOR,
+    &exa::VENDOR,
+    &firecrawl::VENDOR,
+];

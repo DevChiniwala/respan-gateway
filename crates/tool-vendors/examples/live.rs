@@ -167,6 +167,24 @@ fn steps(vendor: &str) -> Vec<Step> {
             ),
             step("get_contents", json!({"urls": ["https://example.com"]})),
         ],
+        "firecrawl" => vec![
+            step("scrape", json!({"url": "https://example.com"})),
+            step(
+                "map_site",
+                json!({"url": "https://example.com", "limit": 1}),
+            ),
+            step(
+                "search",
+                json!({"query": "Rust 1.0 release date", "limit": 1}),
+            ),
+            capturing(
+                "crawl",
+                json!({"url": "https://example.com", "limit": 1}),
+                "\"id\":\"",
+                "crawl",
+            ),
+            step("get_crawl", json!({"crawl_id": "${crawl}", "limit": 1})),
+        ],
         "linkup" => vec![
             step("search", json!({"q": "Rust 1.0 release date"})),
             step("answer", json!({"q": "When was Rust 1.0 released?"})),

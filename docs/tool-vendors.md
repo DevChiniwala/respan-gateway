@@ -47,6 +47,7 @@ are:
 | <img src="assets/tool-vendors/e2b.png" width="20" height="20" alt=""> | [E2B](https://e2b.dev) | Code execution | `e2b` | `E2B_API_KEY` | `run_code`, `list_sandboxes`, `kill_sandbox` |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="assets/tool-vendors/elevenlabs-dark.svg"><img src="assets/tool-vendors/elevenlabs.svg" width="20" height="20" alt=""></picture> | [ElevenLabs](https://elevenlabs.io) | Voice | `elevenlabs` | `ELEVENLABS_API_KEY` | `text_to_speech`, `search_voices`, `speech_to_text`, `sound_effect` |
 | | [Exa](https://exa.ai) | Search | `exa` | `EXA_API_KEY` | `search`, `get_contents` |
+| | [Firecrawl](https://firecrawl.dev) | Web scraping and search | `firecrawl` | `FIRECRAWL_API_KEY` | `scrape`, `crawl`, `get_crawl`, `map_site`, `search` |
 
 These tables are kept by hand: a vendor added to `ALL` in
 [`crates/tool-vendors`](../crates/tool-vendors/README.md), or a tool added
@@ -63,6 +64,7 @@ the arguments; a free call carries none.
 |---|---|---|
 | Linkup | `usd` | Its price list, by depth and fetch mode |
 | Exa | `usd` | The answer's `costDollars.total` |
+| Firecrawl | `credits` | Scrape's `data.metadata.creditsUsed`, search's `creditsUsed`; crawl status shows the job's total without charging it again |
 | Tavily | `credits` | The answer's `usage.credits` |
 | Context7 | `requests` | One a call |
 | TinyFish | `steps` | An agent run's `num_of_steps`; search and fetch are free |
@@ -154,6 +156,22 @@ Speech is billed per character, transcripts per second of audio.
 
 Each call is billed; Exa reports its cost in US dollars. Its deprecated
 `/findSimilar` endpoint is not offered.
+
+**Firecrawl**, at `https://api.firecrawl.dev/v2`, its key a bearer token
+from `FIRECRAWL_API_KEY`:
+
+- `scrape` is `POST /scrape`: a page as markdown, with its metadata.
+- `crawl` is `POST /crawl`: starts a site crawl and returns its ID. It
+  limits the crawl to 10 pages unless a different `limit` is given.
+- `get_crawl` is `GET /crawl/{crawl_id}`: the job's status and scraped
+  pages. Use `skip` and `limit` to read another page of results.
+- `map_site` is `POST /map`: a site's URLs, without their content.
+- `search` is `POST /search`: ranked web results.
+
+Scraping, crawling and search use credits. Scrape and search report the
+credits used in the call's usage metadata when the API returns them.
+`get_crawl` shows the job's total `creditsUsed` in its result; polling does
+not count that total again. Map results carry no usage metadata.
 
 **Linkup**, at `https://api.linkup.so/v1`, its key a bearer token:
 
