@@ -137,8 +137,10 @@ Sandboxes bill per second while they run.
   charts as images.
 - `list_sandboxes` and `kill_sandbox` manage them.
 
-A sandbox lives 180 s by default and bills per second; the key never goes
-to the sandbox's own host.
+New sandboxes live 180 s from creation by default and bill per second.
+Reusing one can extend its expiry but cannot shorten an existing longer
+lifetime; execution uses part of that time. Call `kill_sandbox` when done.
+The key never goes to the sandbox's own host.
 
 **ElevenLabs**, at `https://api.elevenlabs.io`, its key in `xi-api-key`:
 

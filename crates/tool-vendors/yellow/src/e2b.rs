@@ -5,8 +5,8 @@
 //! runs on the sandbox's own host, in the code-interpreter template's
 //! Jupyter server (`POST https://49999-{id}.{domain}/execute`, answering in
 //! NDJSON), with the sandbox's access tokens from create or connect and not
-//! the API key. Sandboxes are billed per second while they run, so each
-//! lives only a few minutes past its last call unless killed sooner.
+//! the API key. Sandboxes are billed per second until killed or expired;
+//! reconnecting can extend their expiry, but cannot shorten it.
 
 use std::time::{Duration, Instant};
 
@@ -33,7 +33,7 @@ pub const VENDOR: ToolVendor = ToolVendor {
 pub const TEMPLATE: &str = "code-interpreter-v1";
 /// The code interpreter's port on the sandbox's host.
 pub const JUPYTER_PORT: u16 = 49999;
-/// How long a sandbox lives after a call, unless the call says otherwise.
+/// The sandbox lifetime requested at creation or reconnection.
 pub const DEFAULT_TIMEOUT: u64 = 180;
 
 /// The most of one stream or traceback a result quotes.
@@ -52,16 +52,17 @@ const TOOLS: &[ToolSpec] = &[
             imports and files persist between runs in the same sandbox) and get its stdout, \
             stderr, results and error; charts and images come back as images. Without \
             `sandbox_id` it creates a new sandbox and returns its id: pass that id to later \
-            calls to reuse it. Sandboxes are billed per second while running: each lives \
-            `timeout_seconds` (default 180) past this call, then is killed; call \
-            `kill_sandbox` when done to stop billing sooner.",
+            calls to reuse it. New sandboxes live `timeout_seconds` (default 180) from \
+            creation; reconnecting can extend but cannot shorten an existing expiry. \
+            Execution uses part of that lifetime. Sandboxes are billed per second while \
+            running: call `kill_sandbox` when done to stop billing sooner.",
         input_schema: r#"{
   "type": "object",
   "properties": {
     "code": {"type": "string", "description": "The code to run, as a notebook cell: the last expression's value is returned as the result."},
     "language": {"type": "string", "enum": ["python", "javascript", "typescript", "r", "java", "bash"], "default": "python", "description": "The code's language. Each language keeps its own state within a sandbox."},
     "sandbox_id": {"type": "string", "description": "A sandbox from an earlier run_code call, to run in it again (and extend its life). Omit to create a new sandbox."},
-    "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 3600, "default": 180, "description": "How long the sandbox lives after this call, and the longest this run may take. Keep it short: running time is billed."},
+    "timeout_seconds": {"type": "integer", "minimum": 10, "maximum": 3600, "default": 180, "description": "Sandbox lifetime requested before running code, and the longest this run may take. Reusing a sandbox can extend but cannot shorten its expiry. Keep it short: running time is billed."},
     "allow_internet": {"type": "boolean", "default": true, "description": "For a new sandbox: whether its code may reach the internet."},
     "template": {"type": "string", "default": "code-interpreter-v1", "description": "For a new sandbox: the E2B template to make it from, one built on the code interpreter."}
   },
@@ -171,12 +172,15 @@ async fn run_code(api: &Api, args: &Map<String, Value>) -> Result<ToolOutput, To
         }
         Err(e) => return Err(ToolError::new(format!("{e} (in sandbox {})", sandbox.id))),
     };
-    let header = format!(
-        "Sandbox: {} ({}; it lives {} s past this call unless reused or killed)",
-        sandbox.id,
-        if created { "new" } else { "reused" },
-        run.timeout
-    );
+    let lives = if created {
+        format!("new; lives {} s from creation", run.timeout)
+    } else {
+        format!(
+            "reused; lives at least {} s from before this run",
+            run.timeout
+        )
+    };
+    let header = format!("Sandbox: {} ({lives}; kill when done)", sandbox.id);
     Ok(render_execution(&header, &lines)?.with_usage("seconds", since.elapsed().as_secs_f64()))
 }
 
