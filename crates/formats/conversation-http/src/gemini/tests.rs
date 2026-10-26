@@ -422,6 +422,24 @@ fn a_stream_that_ends_without_a_finish_was_cut() {
 }
 
 #[test]
+fn a_tool_use_prompt_is_input_and_is_written_back_as_it_came() {
+    let metadata = json!({
+        "promptTokenCount": 10, "toolUsePromptTokenCount": 150,
+        "candidatesTokenCount": 20, "totalTokenCount": 180 });
+    let usage = usage_of(&metadata).expect("usage");
+    assert_eq!((usage.input_tokens, usage.output_tokens), (160, 20));
+    assert_eq!(usage_body(&usage, &extra_usage(&metadata)), Some(metadata));
+    let elsewhere = usage_body(&usage, &Map::new()).expect("usage");
+    assert_eq!(
+        (
+            elsewhere["promptTokenCount"].clone(),
+            elsewhere["totalTokenCount"].clone()
+        ),
+        (json!(160), json!(180))
+    );
+}
+
+#[test]
 fn a_function_call_is_a_tool_block_and_stop_with_it_is_a_tool_use() {
     let chunk = json!({ "candidates": [{ "content": { "role": "model", "parts": [
         { "text": "ok" },

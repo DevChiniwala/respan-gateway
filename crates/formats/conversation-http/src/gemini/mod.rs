@@ -61,8 +61,9 @@
 //!   `SAFETY`, `RECITATION`, `BLOCKLIST` and the like are filtered; any other
 //!   is native to this format. A prompt Gemini blocks (`promptFeedback`
 //!   with no candidate) is filtered.
-//! - `usageMetadata` gives [`Output::Usage`]: `promptTokenCount` is the
-//!   input, `candidatesTokenCount` and `thoughtsTokenCount` the output,
+//! - `usageMetadata` gives [`Output::Usage`]: `promptTokenCount` and
+//!   `toolUsePromptTokenCount` are the input, `candidatesTokenCount` and
+//!   `thoughtsTokenCount` the output,
 //!   `cachedContentTokenCount` the cached input.
 //! - What else a response says is an inert [`Output::Native`] of this format
 //!   (`candidate_fields`, `response_fields`, `usage_fields`), which another
@@ -493,8 +494,8 @@ pub fn usage_body(u: &Usage, native: &Map<String, Value>) -> Option<Value> {
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let mut body = json!({
-        "promptTokenCount": u.input_tokens,
-        "totalTokenCount": u.input_tokens.saturating_add(u.output_tokens).saturating_add(tool_use),
+        "promptTokenCount": u.input_tokens.saturating_sub(tool_use),
+        "totalTokenCount": u.input_tokens.saturating_add(u.output_tokens),
     });
     let candidates = u.output_tokens.saturating_sub(u.reasoning_tokens);
     if candidates > 0 {
@@ -514,8 +515,9 @@ pub fn usage_body(u: &Usage, native: &Map<String, Value>) -> Option<Value> {
 pub fn usage_of(u: &Value) -> Result<Usage, Fault> {
     let n = |key: &str| count(u.get(key));
     let thoughts = n("thoughtsTokenCount")?.unwrap_or(0);
+    let tool_use = n("toolUsePromptTokenCount")?.unwrap_or(0);
     Ok(Usage {
-        input_tokens: n("promptTokenCount")?.unwrap_or(0),
+        input_tokens: n("promptTokenCount")?.unwrap_or(0).saturating_add(tool_use),
         output_tokens: n("candidatesTokenCount")?
             .unwrap_or(0)
             .saturating_add(thoughts),
