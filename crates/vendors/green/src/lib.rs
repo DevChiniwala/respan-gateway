@@ -4,6 +4,7 @@
 
 pub mod anthropic;
 pub mod gemini;
+pub mod ollama;
 pub mod openai;
 pub mod respan;
 pub mod typesafe;
@@ -15,6 +16,7 @@ pub const ALL: &[&Vendor] = &[
     &openai::VENDOR,
     &anthropic::VENDOR,
     &gemini::VENDOR,
+    &ollama::VENDOR,
     &typesafe::VENDOR,
     &respan::VENDOR,
 ];

@@ -21,10 +21,10 @@ pub use respan_gateway_vendor_kit::{
     chat, format, http, json, located, models, time,
 };
 
-pub use respan_gateway_vendors_green::{anthropic, gemini, openai, respan, typesafe};
+pub use respan_gateway_vendors_green::{anthropic, gemini, ollama, openai, respan, typesafe};
 pub use respan_gateway_vendors_yellow::{
     azure, cerebras, cloudflare, deepinfra, deepseek, empiriolabs, fireworks, groq, mistral,
-    ollama, openrouter, perplexity, together, vllm, xai,
+    openrouter, perplexity, together, vllm, xai,
 };
 
 /// The green vendors: maintained, and verified end to end.
