@@ -73,7 +73,7 @@ impl Keep {
 /// needs: the id and status of an item a stateful API stored (a `msg_..` or
 /// `fc_..` of Responses), or a default the format left unsaid. Any other
 /// format drops it instead of refusing.
-pub(crate) const INERT: &str = "inert";
+pub const INERT: &str = "inert";
 
 /// The fields of `native` to write in `format`: all but the `own` keys if they
 /// are in `format`; if they are another's, none if each is droppable (or
@@ -94,6 +94,21 @@ pub(crate) fn kept_fields(
             (false, true) => {}
             (false, false) => return Err(untranslatable(&what(key))),
         }
+    }
+    Ok(fields)
+}
+
+/// The fields of a message's `native` to write in `format`, as
+/// [`kept_fields`] says, a cache marker dropped by another format, the
+/// [`INERT`] ones written as they came by their own.
+pub(crate) fn message_fields(
+    format: &str,
+    native: &Option<NativeFields>,
+    what: impl FnOnce(&str) -> String,
+) -> Result<Map<String, Value>, Fault> {
+    let mut fields = kept_fields(format, native, what, Keep::CACHE_MARKER)?;
+    if let Some(Value::Object(inert)) = fields.shift_remove(INERT) {
+        fields.extend(inert);
     }
     Ok(fields)
 }
@@ -377,7 +392,7 @@ pub(crate) fn encode_message<C: Schema>(m: &Message, roles: &Names<Role>) -> Res
     v.insert("role".into(), role_of(C::NAME, m, roles)?);
     v.insert("content".into(), encode_content::<C>(&m.content)?);
     let fields = |_: &str| "messages with fields the kind has no place for".to_owned();
-    encode_native(C::NAME, &m.native, &mut v, fields, Keep::default())?;
+    v.extend(message_fields(C::NAME, &m.native, fields)?);
     Ok(v.into())
 }
 
