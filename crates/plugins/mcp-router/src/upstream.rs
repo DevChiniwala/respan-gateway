@@ -76,7 +76,7 @@ impl Run {
                     items.push(item);
                 }
             }
-            if let Some(next) = page["nextCursor"].as_str().filter(|c| !c.is_empty()) {
+            if let Some(next) = page["nextCursor"].as_str() {
                 more.insert(server, json!(next));
             }
         }
@@ -315,4 +315,207 @@ fn unrun(fault: &Fault) -> bool {
     let refused = fault.cause::<std::io::Error>();
     lost || fault.code() == "no_session"
         || refused.is_some_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use respan_gateway_core::{Gateway, Provider};
+    use respan_gateway_http::{Body, ClientIo, connect, handle, http, http_body_util::BodyExt};
+    use respan_gateway_mcp_http::{SESSION, StreamableHttp};
+    use respan_gateway_plugin_tool_loop::ToolFilter;
+    use std::sync::Mutex;
+
+    async fn request(
+        gateway: &Gateway,
+        session: Option<&str>,
+        value: Value,
+    ) -> (Value, Option<String>) {
+        let mut request = http::Request::builder()
+            .method(Method::POST)
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .header("accept", "application/json");
+        if let Some(session) = session {
+            request = request.header(SESSION, session);
+        }
+        let request = request
+            .body(Body::full(value.to_string()))
+            .expect("request");
+        let (response, done) = handle(gateway, request, 4096).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let session = response
+            .headers()
+            .get(SESSION)
+            .map(|s| s.to_str().expect("session").to_owned());
+        let (body, end) = tokio::join!(BodyExt::collect(response.into_body()), done);
+        end.expect("delivery");
+        let body = body.expect("body").to_bytes();
+        let value: Value = serde_json::from_slice(&body).expect("JSON response");
+        assert!(value.get("error").is_none(), "{value}");
+        (value["result"].clone(), session)
+    }
+
+    async fn pages(method: &'static str, field: &'static str) {
+        let servers = [
+            ("empty", Some("")),
+            ("named", Some("page-2")),
+            ("done", None),
+        ];
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut gateway = Gateway::new()
+            .client::<Input, Output, ClientIo>(StreamableHttp::default())
+            .expect("client");
+        for (server, cursor) in servers {
+            let calls = calls.clone();
+            let send = connect(
+                move |request: http::Request<Body>| {
+                    let calls = calls.clone();
+                    async move {
+                        let body = BodyExt::collect(request.into_body())
+                            .await
+                            .expect("request body")
+                            .to_bytes();
+                        let asked: Value = serde_json::from_slice(&body).expect("JSON request");
+                        let result = match asked["method"].as_str().expect("method") {
+                            "initialize" => json!({
+                                "protocolVersion": PROTOCOL,
+                                "capabilities": {"tools": {}, "prompts": {}, "resources": {}},
+                                "serverInfo": {"name": server, "version": "1"}
+                            }),
+                            "notifications/initialized" => {
+                                return Ok((
+                                    http::Response::builder()
+                                        .status(StatusCode::ACCEPTED)
+                                        .body(Body::default())
+                                        .expect("notification response"),
+                                    None,
+                                ));
+                            }
+                            received => {
+                                assert_eq!(received, method);
+                                let supplied = asked["params"].get("cursor");
+                                calls
+                                    .lock()
+                                    .expect("calls")
+                                    .push((server, supplied.cloned()));
+                                let mut page = json!({field: []});
+                                if let Some(supplied) = supplied {
+                                    assert_eq!(supplied.as_str(), cursor);
+                                    let item = match field {
+                                        "tools" => {
+                                            json!({"name": "second", "inputSchema": {"type": "object"}})
+                                        }
+                                        "prompts" => json!({"name": "second"}),
+                                        "resources" => {
+                                            json!({"name": "second", "uri": "file:///second"})
+                                        }
+                                        _ => {
+                                            json!({"name": "second", "uriTemplate": "file:///{name}"})
+                                        }
+                                    };
+                                    page[field] = json!([item]);
+                                } else if let Some(cursor) = cursor {
+                                    page["nextCursor"] = json!(cursor);
+                                }
+                                page
+                            }
+                        };
+                        let body = json!({"jsonrpc": "2.0", "id": asked["id"], "result": result});
+                        Ok((
+                            http::Response::builder()
+                                .header("content-type", "application/json")
+                                .body(Body::full(body.to_string()))
+                                .expect("response"),
+                            None,
+                        ))
+                    }
+                },
+                4096,
+            );
+            gateway = gateway
+                .provider(Provider::new(server, StreamableHttp::default(), send))
+                .expect("provider");
+        }
+        gateway = gateway.plugin(crate::McpRouter::new(
+            servers.iter().map(|(name, _)| (*name).to_owned()).collect(),
+            ToolFilter::default(),
+        ));
+        let (_, session) = request(&gateway, None, json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}
+        })).await;
+        let (first, _) = request(
+            &gateway,
+            session.as_deref(),
+            json!({
+                "jsonrpc": "2.0", "id": 2, "method": method, "params": {}
+            }),
+        )
+        .await;
+        assert_eq!(first[field], json!([]));
+        let cursor = first["nextCursor"].as_str().expect("continuation");
+        assert_eq!(
+            serde_json::from_str::<Value>(cursor).expect("merged cursor"),
+            json!({"empty": "", "named": "page-2"})
+        );
+        let (second, _) = request(
+            &gateway,
+            session.as_deref(),
+            json!({
+                "jsonrpc": "2.0", "id": 3, "method": method, "params": {"cursor": cursor}
+            }),
+        )
+        .await;
+        let items = second[field].as_array().expect("items");
+        assert_eq!(items.len(), 2);
+        let (key, expected) = match field {
+            "tools" | "prompts" => ("name", ["empty__second", "named__second"]),
+            "resources" => (
+                "uri",
+                ["mcp://empty/file:///second", "mcp://named/file:///second"],
+            ),
+            _ => (
+                "uriTemplate",
+                ["mcp://empty/file:///{name}", "mcp://named/file:///{name}"],
+            ),
+        };
+        assert_eq!(
+            [items[0][key].as_str(), items[1][key].as_str()],
+            expected.map(Some)
+        );
+        assert!(second.get("nextCursor").is_none());
+        let mut calls = calls.lock().expect("calls").clone();
+        calls.sort_by_key(|(server, cursor)| (*server, cursor.is_some()));
+        assert_eq!(
+            calls,
+            vec![
+                ("done", None),
+                ("empty", None),
+                ("empty", Some(json!(""))),
+                ("named", None),
+                ("named", Some(json!("page-2")))
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_keep_empty_continuation_cursors() {
+        pages("tools/list", "tools").await;
+    }
+
+    #[tokio::test]
+    async fn prompts_keep_empty_continuation_cursors() {
+        pages("prompts/list", "prompts").await;
+    }
+
+    #[tokio::test]
+    async fn resources_keep_empty_continuation_cursors() {
+        pages("resources/list", "resources").await;
+    }
+
+    #[tokio::test]
+    async fn templates_keep_empty_continuation_cursors() {
+        pages("resources/templates/list", "resourceTemplates").await;
+    }
 }

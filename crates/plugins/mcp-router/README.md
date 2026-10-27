@@ -26,7 +26,8 @@ each server behind it, opened with the client's and ended with it.
   at once.
 - Resources keep their URIs under `mcp://{server}/{uri}`.
 - Lists are merged in the order the servers are given, with a cursor that
-  pages the servers that have more.
+  pages the servers that have more. Each server's cursor is passed back
+  unchanged, including an empty string; an absent cursor ends its list.
 - The servers' notification streams are merged into the client's.
 
 ```rust,ignore
