@@ -526,21 +526,16 @@ fn encode_response(events: &[Output], asked: &Value) -> Result<Bytes, Fault> {
     }
     body.insert("answers".into(), written.into());
     if let Some(u) = usage {
-        let mut v = json!({
+        let v = json!({
             "input_tokens": u.input_tokens,
+            "input_tokens_details": {
+                "cached_tokens": u.cached_input_tokens,
+                "cache_write_tokens": u.cache_write_input_tokens,
+            },
             "output_tokens": u.output_tokens,
+            "output_tokens_details": { "reasoning_tokens": u.reasoning_tokens },
             "total_tokens": u.input_tokens + u.output_tokens,
         });
-        let cached = [
-            ("cached_tokens", u.cached_input_tokens),
-            ("cache_write_tokens", u.cache_write_input_tokens),
-        ];
-        for (key, n) in cached.into_iter().filter(|(_, n)| *n > 0) {
-            v["input_tokens_details"][key] = n.into();
-        }
-        if u.reasoning_tokens > 0 {
-            v["output_tokens_details"]["reasoning_tokens"] = u.reasoning_tokens.into();
-        }
         body.insert("usage".into(), v);
     }
     to_bytes(&body)
@@ -699,7 +694,9 @@ mod tests {
                  "probabilities": [{"value": true, "probability": 0.8}, {"value": "true", "probability": 0.2}]},
                 {"type": "score", "name": null, "score": 0.8, "confidence": 0.9,
                  "probabilities": [{"label": "low", "value": 0, "probability": 0.2}, {"label": "high", "value": 1, "probability": 0.8}]},
-            ], "usage": {"input_tokens": 3, "output_tokens": 0, "total_tokens": 3, "input_tokens_details": {"cached_tokens": 1}}})
+            ], "usage": {"input_tokens": 3, "output_tokens": 0, "total_tokens": 3,
+                 "input_tokens_details": {"cached_tokens": 1, "cache_write_tokens": 0},
+                 "output_tokens_details": {"reasoning_tokens": 0}}})
         );
     }
 
