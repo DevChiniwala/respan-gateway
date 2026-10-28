@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use respan_gateway_conversation as conversation;
 use respan_gateway_conversation_http::anthropic::AnthropicMessages;
+use respan_gateway_conversation_http::bedrock::BedrockConverse;
 use respan_gateway_conversation_http::gemini::GeminiGenerate;
 use respan_gateway_conversation_http::openai::OpenAiChat;
 use respan_gateway_conversation_http::responses::OpenAiResponses;
@@ -264,6 +265,7 @@ pub fn formats() -> Vec<KnownFormat> {
         )),
         KnownFormat::of(kind::CHAT, endpoints::MESSAGES, AnthropicMessages).model(chat()),
         KnownFormat::of(kind::CHAT, endpoints::GENERATE_CONTENT, GeminiGenerate).model(chat()),
+        KnownFormat::provider_only(kind::CHAT, &BedrockConverse),
         KnownFormat::claiming(
             kind::IMAGE,
             endpoints::GENERATE_CONTENT,
