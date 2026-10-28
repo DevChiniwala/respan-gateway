@@ -854,3 +854,83 @@ async fn a_vendor_sends_a_chat_to_a_model_its_chat_format_refuses_in_another() {
         );
     }
 }
+
+#[tokio::test]
+async fn azure_decisions_uses_the_reserved_path_and_api_key() {
+    use axum::{Json, Router, extract::State, routing::post as route_post};
+    use serde_json::{Value, json};
+    use std::sync::{Arc, Mutex};
+    type Captured = Arc<Mutex<Vec<(http::HeaderMap, Value)>>>;
+    async fn fake(
+        State(seen): State<Captured>,
+        headers: http::HeaderMap,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        // An answer per question, echoing its name, as Azure answers.
+        let answers: Vec<Value> = (body["questions"].as_array().into_iter().flatten())
+            .map(|q| json!({"type": "predicate", "name": q["name"], "probability": 0.7}))
+            .collect();
+        seen.lock().expect("capture").push((headers, body));
+        Json(
+            json!({"model":"deployment", "answers": answers, "usage":{"input_tokens":4,"output_tokens":0}}),
+        )
+    }
+    let seen: Captured = Arc::default();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let addr = listener.local_addr().expect("address");
+    let server = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new()
+                .route("/prefix/openai/v1/decisions", route_post(fake))
+                .with_state(seen.clone()),
+        )
+        .into_future(),
+    );
+    for order in [
+        "\"decisions\", \"openai-decisions\"",
+        "\"openai-decisions\", \"decisions\"",
+    ] {
+        let text = format!(
+            "providers = {{ azure = {{ vendor = \"azure\", base_url = \"http://{addr}/prefix/openai/v1\", key = \"provider-secret\", formats = [\"openai-decisions\"] }} }}\nformats = [{order}]\n"
+        );
+        let gateway = resolve(&text).expect("gateway");
+        let body = json!({"model":"azure/deployment","input":"hello","questions":[{"type":"predicate","instructions":"is it true?"}]});
+        let mut request = post("/openai/v1/decisions", body.to_string());
+        request.headers_mut().insert(
+            "authorization",
+            "Bearer client-secret".parse().expect("header"),
+        );
+        let (resp, _) = serve(&gateway, request).await;
+        let (status, _, body) = read_whole(resp).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let result: Value = serde_json::from_slice(&body.expect("response body")).expect("json");
+        assert_eq!(result["answers"][0]["probability"], 0.7);
+        let bad = json!({"model":"azure/deployment", "state":"hello", "questions":{}});
+        let (resp, _) = serve(&gateway, post("/openai/v1/decisions", bad.to_string())).await;
+        assert_eq!(read_whole(resp).await.0, StatusCode::BAD_REQUEST);
+        // A client of `decisions` is asked of Azure in its contract.
+        let legacy = json!({"model":"azure/deployment", "state":"hello", "questions":{"spam":{"type":"noul","instructions":"Is it spam?"}}});
+        let (resp, _) = serve(&gateway, post("/v1/decisions", legacy.to_string())).await;
+        let (status, _, body) = read_whole(resp).await;
+        assert_eq!(status, StatusCode::OK, "{body:?}");
+        let result: Value = serde_json::from_slice(&body.expect("response body")).expect("json");
+        assert_eq!(result["answers"]["spam"]["noul"], 0.7);
+        gateway.idle().await;
+    }
+    {
+        let captured = seen.lock().expect("capture");
+        assert_eq!(captured.len(), 4);
+        for (headers, body) in captured.iter() {
+            assert_eq!(
+                headers.get("api-key").and_then(|v| v.to_str().ok()),
+                Some("provider-secret")
+            );
+            assert!(headers.get("authorization").is_none());
+            assert_eq!(body["model"], "deployment");
+        }
+    }
+    server.abort();
+}

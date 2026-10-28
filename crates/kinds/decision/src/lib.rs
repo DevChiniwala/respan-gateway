@@ -79,6 +79,15 @@ impl Question {
     }
 }
 
+/// A typed choice value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChoiceValue {
+    /// A string value.
+    String(String),
+    /// A boolean value.
+    Boolean(bool),
+}
+
 /// What a question asks for.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
@@ -94,7 +103,7 @@ pub enum Ask {
     /// than its name says.
     Choice {
         /// The options.
-        options: Vec<(String, Option<Value>)>,
+        options: Vec<(ChoiceValue, Option<Value>)>,
     },
     /// A level of `levels`, lowest first, each a text or JSON.
     Score {
@@ -180,10 +189,12 @@ pub enum Verdict {
     /// The option chosen, and each option's probability, in order.
     Choice {
         /// The option chosen.
-        choice: String,
+        choice: ChoiceValue,
         /// Each option's probability.
-        probabilities: Vec<(String, f64)>,
+        probabilities: Vec<(ChoiceValue, f64)>,
     },
+    /// The provider declined to answer.
+    Refusal,
     /// The expected level, from 0 for the lowest, and each level's
     /// probability, lowest first.
     Score {

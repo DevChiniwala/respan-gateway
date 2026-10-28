@@ -10,7 +10,16 @@ use respan_gateway_vendor_kit::{Dialect, Dialected, KeyIn, Vendor};
 pub const VENDOR: Vendor = Vendor {
     id: "azure",
     key_env: &["AZURE_OPENAI_API_KEY"],
-    formats: &[(&Dialected::new(OpenAiChat, Azure), None)],
+    formats: &[
+        (&Dialected::new(OpenAiChat, Azure), None),
+        (
+            &Dialected::new(
+                respan_gateway_decision_http::OpenAiDecisions::DEFAULT,
+                AzureDecisions,
+            ),
+            None,
+        ),
+    ],
     ..Vendor::DEFAULT
 };
 
@@ -22,6 +31,17 @@ impl Dialect for Azure {
     type Input = Input;
     type Output = Output;
 
+    fn key(&self) -> Option<KeyIn> {
+        Some(KeyIn::Header("api-key"))
+    }
+}
+
+/// Azure Decisions authentication.
+#[derive(Debug, Clone, Copy)]
+pub struct AzureDecisions;
+impl Dialect for AzureDecisions {
+    type Input = respan_gateway_decision::Input;
+    type Output = respan_gateway_decision::Output;
     fn key(&self) -> Option<KeyIn> {
         Some(KeyIn::Header("api-key"))
     }

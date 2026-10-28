@@ -21,7 +21,9 @@ use respan_gateway_conversation_http::openai::OpenAiChat;
 use respan_gateway_conversation_http::{Schema, read_provider_error};
 use respan_gateway_core::Provider;
 use respan_gateway_core::{Connection, ErrorCode, Fault, Format};
-use respan_gateway_decision::{Answer, Ask, Input, Output, Question, Start, Usage, Verdict};
+use respan_gateway_decision::{
+    Answer, Ask, ChoiceValue, Input, Output, Question, Start, Usage, Verdict,
+};
 use respan_gateway_http::bytes::Bytes;
 use respan_gateway_http::http::header::{CONTENT_TYPE, HeaderValue};
 use respan_gateway_http::http::{self, Method, response::Parts as ResponseHead};
@@ -29,6 +31,10 @@ use respan_gateway_http::path::{path_ends_with, set_path};
 use respan_gateway_http::{All, ClientIo, Decoder, Encoder, ProviderIo, Whole};
 use respan_gateway_http::{Connect, Upstream};
 use serde_json::{Map, Value, json};
+
+mod openai;
+
+pub use openai::OpenAiDecisions;
 
 const NAME: &str = "decisions";
 const PATH: &str = "/decisions";
@@ -173,7 +179,12 @@ fn decode_question(id: String, v: Value) -> Result<Question, Fault> {
             Value::Object(options) => Ask::Choice {
                 options: options
                     .into_iter()
-                    .map(|(name, about)| (name, Some(about).filter(|v| !v.is_null())))
+                    .map(|(name, about)| {
+                        (
+                            ChoiceValue::String(name),
+                            Some(about).filter(|v| !v.is_null()),
+                        )
+                    })
                     .collect(),
             },
             _ => {
@@ -215,8 +226,16 @@ fn encode_request(input: &Input) -> Result<Map<String, Value>, Fault> {
             Ask::Choice { options } => {
                 let options = options
                     .iter()
-                    .map(|(name, about)| (name.clone(), about.clone().unwrap_or(Value::Null)));
-                ("choice", Some(Value::Object(options.collect())))
+                    .map(|(name, about)| match name {
+                        ChoiceValue::String(name) => {
+                            Ok((name.clone(), about.clone().unwrap_or(Value::Null)))
+                        }
+                        _ => Err(Fault::bad_request(
+                            "boolean choices cannot be encoded as decisions",
+                        )),
+                    })
+                    .collect::<Result<Map<_, _>, _>>()?;
+                ("choice", Some(Value::Object(options)))
             }
             Ask::Score { levels } => ("score", Some(Value::from(levels.clone()))),
             _ => {
@@ -283,11 +302,11 @@ fn decode_answer(id: &str, a: &Value) -> Option<Answer> {
         "noul" => (Verdict::Noul(number("noul")?), &["noul"]),
         "choice" => (
             Verdict::Choice {
-                choice: a["choice"].as_str()?.to_owned(),
+                choice: ChoiceValue::String(a["choice"].as_str()?.to_owned()),
                 probabilities: a["probabilities"]
                     .as_object()?
                     .iter()
-                    .map(|(name, p)| Some((name.clone(), p.as_f64()?)))
+                    .map(|(name, p)| Some((ChoiceValue::String(name.clone()), p.as_f64()?)))
                     .collect::<Option<_>>()?,
             },
             &["choice", "probabilities"],
@@ -367,9 +386,22 @@ fn encode_answer(answer: &Answer) -> Result<Map<String, Value>, Fault> {
             probabilities,
         } => {
             v.insert("type".into(), "choice".into());
+            let ChoiceValue::String(choice) = choice else {
+                return Err(Fault::bad_request(
+                    "boolean choices cannot be encoded as decisions",
+                ));
+            };
             v.insert("choice".into(), choice.clone().into());
-            let by_option = probabilities.iter().map(|(o, p)| (o.clone(), (*p).into()));
-            v.insert("probabilities".into(), Value::Object(by_option.collect()));
+            let by_option = probabilities
+                .iter()
+                .map(|(o, p)| match o {
+                    ChoiceValue::String(o) => Ok((o.clone(), (*p).into())),
+                    _ => Err(Fault::bad_request(
+                        "boolean choices cannot be encoded as decisions",
+                    )),
+                })
+                .collect::<Result<Map<_, _>, _>>()?;
+            v.insert("probabilities".into(), Value::Object(by_option));
         }
         Verdict::Score {
             score,
